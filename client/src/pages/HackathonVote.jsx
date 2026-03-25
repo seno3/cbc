@@ -144,7 +144,7 @@ export default function HackathonVote() {
               <p className="text-gray-300 font-bold text-lg mb-2">You've seen all pairs!</p>
               <p className="text-gray-600 text-sm mb-6">
                 {leaderboard.length > 0
-                  ? 'Check the results to see who's winning.'
+                  ? "Check the results to see who's winning."
                   : 'Submit more projects to unlock more comparisons.'}
               </p>
               <div className="flex justify-center gap-3">
