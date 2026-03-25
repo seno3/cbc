@@ -29,6 +29,9 @@ db.exec(`
     elo INTEGER NOT NULL DEFAULT 1000,
     wins INTEGER NOT NULL DEFAULT 0,
     losses INTEGER NOT NULL DEFAULT 0,
+    judge_elo INTEGER NOT NULL DEFAULT 1000,
+    judge_wins INTEGER NOT NULL DEFAULT 0,
+    judge_losses INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (hackathon_id) REFERENCES hackathons(id)
   );
@@ -46,5 +49,12 @@ db.exec(`
     FOREIGN KEY (loser_id) REFERENCES projects(id)
   );
 `);
+
+// Migrate existing DBs — ignore errors if columns already exist
+['judge_elo INTEGER NOT NULL DEFAULT 1000',
+ 'judge_wins INTEGER NOT NULL DEFAULT 0',
+ 'judge_losses INTEGER NOT NULL DEFAULT 0'].forEach(col => {
+  try { db.exec(`ALTER TABLE projects ADD COLUMN ${col}`); } catch (_) {}
+});
 
 module.exports = db;

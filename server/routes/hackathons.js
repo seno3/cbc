@@ -78,7 +78,9 @@ router.get('/:slug/pair', (req, res) => {
   if (!h) return res.status(404).json({ error: 'Not found' });
 
   const sessionId = req.query.session || 'anon';
-  const projects = db.prepare('SELECT * FROM projects WHERE hackathon_id = ? ORDER BY elo DESC').all(h.id);
+  const isJudge = sessionId.startsWith('judge_');
+  // Use judge_elo for pair selection in judge sessions so matchups are based on judge rankings
+  const projects = db.prepare(`SELECT * FROM projects WHERE hackathon_id = ? ORDER BY ${isJudge ? 'judge_elo' : 'elo'} DESC`).all(h.id);
 
   if (projects.length < 2) return res.json({ pair: null, done: projects.length < 2 });
 
@@ -88,7 +90,9 @@ router.get('/:slug/pair', (req, res) => {
     WHERE hackathon_id = ? AND session_id = ?
   `).all(h.id, sessionId).map(r => [r.winner_id, r.loser_id]);
 
-  const pair = pickPair(projects, seen);
+  // Normalize so pickPair always compares on .elo regardless of mode
+  const normalized = isJudge ? projects.map(p => ({ ...p, elo: p.judge_elo })) : projects;
+  const pair = pickPair(normalized, seen);
   if (!pair) return res.json({ pair: null, done: true });
 
   // Strip readme from pair response (heavy)
@@ -110,11 +114,16 @@ router.post('/:slug/vote', (req, res) => {
   const loser = db.prepare('SELECT * FROM projects WHERE id = ? AND hackathon_id = ?').get(loser_id, h.id);
   if (!winner || !loser) return res.status(400).json({ error: 'Invalid project ids' });
 
-  const { winnerElo, loserElo } = updateElo(winner.elo, loser.elo);
-
   const update = db.transaction(() => {
-    db.prepare('UPDATE projects SET elo = ?, wins = wins + 1 WHERE id = ?').run(winnerElo, winner.id);
-    db.prepare('UPDATE projects SET elo = ?, losses = losses + 1 WHERE id = ?').run(loserElo, loser.id);
+    if (is_judge) {
+      const { winnerElo, loserElo } = updateElo(winner.judge_elo, loser.judge_elo);
+      db.prepare('UPDATE projects SET judge_elo = ?, judge_wins = judge_wins + 1 WHERE id = ?').run(winnerElo, winner.id);
+      db.prepare('UPDATE projects SET judge_elo = ?, judge_losses = judge_losses + 1 WHERE id = ?').run(loserElo, loser.id);
+    } else {
+      const { winnerElo, loserElo } = updateElo(winner.elo, loser.elo);
+      db.prepare('UPDATE projects SET elo = ?, wins = wins + 1 WHERE id = ?').run(winnerElo, winner.id);
+      db.prepare('UPDATE projects SET elo = ?, losses = losses + 1 WHERE id = ?').run(loserElo, loser.id);
+    }
     db.prepare(`
       INSERT INTO comparisons (hackathon_id, winner_id, loser_id, session_id, is_judge)
       VALUES (?, ?, ?, ?, ?)
@@ -122,34 +131,46 @@ router.post('/:slug/vote', (req, res) => {
   });
   update();
 
-  res.json({ ok: true, winnerElo, loserElo });
+  res.json({ ok: true });
 });
 
-// GET /api/hackathons/:slug/leaderboard
+// GET /api/hackathons/:slug/leaderboard?judge=true
 router.get('/:slug/leaderboard', (req, res) => {
   const h = db.prepare('SELECT * FROM hackathons WHERE slug = ?').get(req.params.slug);
   if (!h) return res.status(404).json({ error: 'Not found' });
 
-  const projects = db.prepare(`
-    SELECT id, title, author_name, tags, elo, wins, losses,
-           (wins + losses) as total_votes,
-           CASE WHEN (wins + losses) = 0 THEN 0
-                ELSE ROUND(wins * 100.0 / (wins + losses), 1)
-           END as win_rate
-    FROM projects
-    WHERE hackathon_id = ?
-    ORDER BY elo DESC
-  `).all(h.id);
+  const isJudge = req.query.judge === 'true';
+
+  const projects = isJudge
+    ? db.prepare(`
+        SELECT id, title, author_name, tags,
+               judge_elo as elo, judge_wins as wins, judge_losses as losses,
+               (judge_wins + judge_losses) as total_votes,
+               CASE WHEN (judge_wins + judge_losses) = 0 THEN 0
+                    ELSE ROUND(judge_wins * 100.0 / (judge_wins + judge_losses), 1)
+               END as win_rate
+        FROM projects WHERE hackathon_id = ? ORDER BY judge_elo DESC
+      `).all(h.id)
+    : db.prepare(`
+        SELECT id, title, author_name, tags, elo, wins, losses,
+               (wins + losses) as total_votes,
+               CASE WHEN (wins + losses) = 0 THEN 0
+                    ELSE ROUND(wins * 100.0 / (wins + losses), 1)
+               END as win_rate
+        FROM projects WHERE hackathon_id = ? ORDER BY elo DESC
+      `).all(h.id);
+
   res.json(projects);
 });
 
 // POST /api/hackathons/:slug/verify-judge
+// Any non-empty code grants access — the code just becomes the judge's identity token
 router.post('/:slug/verify-judge', (req, res) => {
-  const h = db.prepare('SELECT * FROM hackathons WHERE slug = ?').get(req.params.slug);
+  const h = db.prepare('SELECT id FROM hackathons WHERE slug = ?').get(req.params.slug);
   if (!h) return res.status(404).json({ error: 'Not found' });
   const { code } = req.body;
-  if (code === h.judge_code) return res.json({ ok: true });
-  res.status(401).json({ error: 'Invalid judge code' });
+  if (!code || !code.trim()) return res.status(400).json({ error: 'Code required' });
+  res.json({ ok: true });
 });
 
 module.exports = router;
