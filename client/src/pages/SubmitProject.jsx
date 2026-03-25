@@ -4,31 +4,42 @@ import toast from 'react-hot-toast';
 import { api } from '../utils/api';
 import { getDisplayName, setDisplayName } from '../utils/session';
 
+// Extract a short description from the first non-heading paragraph of a README
+function extractDescription(readme) {
+  const lines = readme.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('!') && !trimmed.startsWith('<')) {
+      return trimmed.slice(0, 200);
+    }
+  }
+  return '';
+}
+
 export default function SubmitProject() {
   const { slug } = useParams();
   const navigate = useNavigate();
-  const [form, setForm] = useState({
-    title: '',
-    description: '',
-    github_url: '',
-    tags: '',
-    author_name: getDisplayName(),
-  });
+  const [githubUrl, setGithubUrl] = useState('');
+  const [fetched, setFetched] = useState(false);
   const [readme, setReadme] = useState('');
+  const [form, setForm] = useState({ title: '', author_name: getDisplayName() });
   const [fetchingReadme, setFetchingReadme] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
-
-  async function fetchReadme() {
-    if (!form.github_url) return toast.error('Enter a GitHub URL first');
+  async function handleFetch(e) {
+    e.preventDefault();
+    if (!githubUrl.trim()) return toast.error('Paste a GitHub URL first');
     setFetchingReadme(true);
     try {
-      const data = await api.fetchGithubReadme(form.github_url);
+      const data = await api.fetchGithubReadme(githubUrl);
       setReadme(data.readme);
-      // Auto-fill title from repo name if empty
-      if (!form.title) setForm(f => ({ ...f, title: data.repo.split('/')[1] }));
-      toast.success('README fetched!');
+      setForm(f => ({
+        ...f,
+        title: f.title || data.repo.split('/')[1].replace(/-/g, ' '),
+        description: extractDescription(data.readme),
+      }));
+      setFetched(true);
+      toast.success('README loaded!');
     } catch (err) {
       toast.error(err.message || 'Could not fetch README');
     } finally {
@@ -38,12 +49,17 @@ export default function SubmitProject() {
 
   async function handleSubmit(e) {
     e.preventDefault();
-    if (!form.title.trim()) return toast.error('Title required');
     if (!form.author_name.trim()) return toast.error('Your name is required');
     setLoading(true);
     try {
       setDisplayName(form.author_name);
-      await api.submitProject(slug, { ...form, readme });
+      await api.submitProject(slug, {
+        title: form.title || githubUrl.split('/').pop(),
+        description: form.description || '',
+        github_url: githubUrl,
+        readme,
+        author_name: form.author_name,
+      });
       toast.success('Project submitted!');
       navigate(`/h/${slug}`);
     } catch (err) {
@@ -58,65 +74,59 @@ export default function SubmitProject() {
       <h1 className="text-2xl font-bold mb-1">
         <span className="text-neon">//</span> Submit Project
       </h1>
-      <p className="text-gray-600 text-sm mb-8">Add your project to the ranking pool.</p>
+      <p className="text-gray-600 text-sm mb-8">Paste your GitHub link — we'll do the rest.</p>
 
-      <form onSubmit={handleSubmit} className="card space-y-4">
-        {/* GitHub URL + fetch */}
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">GitHub Repository</label>
-          <div className="flex gap-2">
+      {/* Step 1: GitHub URL */}
+      <form onSubmit={handleFetch} className="card mb-4">
+        <label className="block text-xs text-gray-500 mb-2">GitHub Repository *</label>
+        <div className="flex gap-2">
+          <input
+            className="input"
+            placeholder="https://github.com/owner/repo"
+            value={githubUrl}
+            onChange={e => setGithubUrl(e.target.value)}
+            autoFocus
+          />
+          <button
+            type="submit"
+            disabled={fetchingReadme}
+            className="btn-neon shrink-0 text-sm py-2 px-4 whitespace-nowrap"
+          >
+            {fetchingReadme ? '...' : fetched ? 'Re-fetch' : 'Import →'}
+          </button>
+        </div>
+        {fetched && (
+          <p className="text-xs text-neon mt-2">
+            ✓ README loaded ({(readme.length / 1024).toFixed(1)} KB)
+          </p>
+        )}
+      </form>
+
+      {/* Step 2: Confirm + name */}
+      {fetched && (
+        <form onSubmit={handleSubmit} className="card space-y-4 animate-fade-in">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Project Title</label>
             <input
               className="input"
-              placeholder="https://github.com/owner/repo"
-              value={form.github_url}
-              onChange={set('github_url')}
+              value={form.title}
+              onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
             />
-            <button
-              type="button"
-              onClick={fetchReadme}
-              disabled={fetchingReadme}
-              className="btn-ghost shrink-0 text-sm py-2 px-3 whitespace-nowrap"
-            >
-              {fetchingReadme ? '...' : 'Fetch README'}
-            </button>
           </div>
-          {readme && (
-            <p className="text-xs text-neon mt-1">
-              ✓ README loaded ({(readme.length / 1024).toFixed(1)}KB)
-            </p>
-          )}
-        </div>
-
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Project Title *</label>
-          <input className="input" placeholder="Epic Project Name" value={form.title} onChange={set('title')} />
-        </div>
-
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Short Description</label>
-          <textarea
-            className="input resize-none"
-            rows={3}
-            placeholder="What does your project do? (shown on vote cards)"
-            value={form.description}
-            onChange={set('description')}
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Tags (comma-separated)</label>
-          <input className="input" placeholder="ai, web, cli, game" value={form.tags} onChange={set('tags')} />
-        </div>
-
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Your Name *</label>
-          <input className="input" placeholder="hacker42" value={form.author_name} onChange={set('author_name')} />
-        </div>
-
-        <button type="submit" className="btn-neon w-full" disabled={loading}>
-          {loading ? 'Submitting...' : 'Submit Project →'}
-        </button>
-      </form>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Your Name *</label>
+            <input
+              className="input"
+              placeholder="hacker42"
+              value={form.author_name}
+              onChange={e => setForm(f => ({ ...f, author_name: e.target.value }))}
+            />
+          </div>
+          <button type="submit" className="btn-neon w-full" disabled={loading}>
+            {loading ? 'Submitting...' : 'Submit to Hackathon →'}
+          </button>
+        </form>
+      )}
     </div>
   );
 }
